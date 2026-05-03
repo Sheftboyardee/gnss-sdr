@@ -41,6 +41,11 @@ public:
     // PROMPT I and Q (to analyze navigation symbols)
     float prompt_I;
     float prompt_Q;
+    // Early and Late I/Q components
+    float early_I;
+    float early_Q;
+    float late_I;
+    float late_Q;
     // PRN start sample stamp
     uint64_t PRN_start_sample_count;
 

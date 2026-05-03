@@ -30,6 +30,10 @@ bool Tracking_Dump_Reader::read_binary_obs()
             d_dump_file.read(reinterpret_cast<char *>(&abs_VL), sizeof(float));
             d_dump_file.read(reinterpret_cast<char *>(&prompt_I), sizeof(float));
             d_dump_file.read(reinterpret_cast<char *>(&prompt_Q), sizeof(float));
+            d_dump_file.read(reinterpret_cast<char *>(&early_I), sizeof(float));
+            d_dump_file.read(reinterpret_cast<char *>(&early_Q), sizeof(float));
+            d_dump_file.read(reinterpret_cast<char *>(&late_I), sizeof(float));
+            d_dump_file.read(reinterpret_cast<char *>(&late_Q), sizeof(float));
             d_dump_file.read(reinterpret_cast<char *>(&PRN_start_sample_count), sizeof(uint64_t));
             d_dump_file.read(reinterpret_cast<char *>(&acc_carrier_phase_rad), sizeof(float));
             d_dump_file.read(reinterpret_cast<char *>(&carrier_doppler_hz), sizeof(float));
@@ -72,7 +76,7 @@ int64_t Tracking_Dump_Reader::num_epochs()
 {
     std::ifstream::pos_type size;
     int number_of_double_vars = 1;
-    int number_of_float_vars = 19;
+    int number_of_float_vars = 23;
     int epoch_size_bytes = sizeof(uint64_t) + sizeof(double) * number_of_double_vars +
                            sizeof(float) * number_of_float_vars + sizeof(unsigned int) +
                            sizeof(uint64_t) + sizeof(int32_t);

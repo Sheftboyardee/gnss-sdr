@@ -1646,6 +1646,15 @@ void dll_pll_veml_tracking::log_data()
                     // PROMPT I and Q (to analyze navigation symbols)
                     d_dump_file.write(reinterpret_cast<char *>(&prompt_I), sizeof(float));
                     d_dump_file.write(reinterpret_cast<char *>(&prompt_Q), sizeof(float));
+                    // Early and Late I/Q components
+                    tmp_float = d_E_accu.real();
+                    d_dump_file.write(reinterpret_cast<char *>(&tmp_float), sizeof(float));
+                    tmp_float = d_E_accu.imag();
+                    d_dump_file.write(reinterpret_cast<char *>(&tmp_float), sizeof(float));
+                    tmp_float = d_L_accu.real();
+                    d_dump_file.write(reinterpret_cast<char *>(&tmp_float), sizeof(float));
+                    tmp_float = d_L_accu.imag();
+                    d_dump_file.write(reinterpret_cast<char *>(&tmp_float), sizeof(float));
                     // PRN start sample stamp
                     tmp_long_int = this->nitems_read(0) + static_cast<uint64_t>(d_current_prn_length_samples);
                     d_dump_file.write(reinterpret_cast<char *>(&tmp_long_int), sizeof(uint64_t));
@@ -1706,7 +1715,7 @@ int32_t dll_pll_veml_tracking::save_matfile() const
     // READ DUMP FILE
     std::ifstream::pos_type size;
     const int32_t number_of_double_vars = 1;
-    const int32_t number_of_float_vars = 19;
+    const int32_t number_of_float_vars = 23;
     const int32_t epoch_size_bytes = sizeof(uint64_t) + sizeof(double) * number_of_double_vars +
                                      sizeof(float) * number_of_float_vars + sizeof(uint32_t) +
                                      sizeof(uint64_t) + sizeof(int32_t);
@@ -1746,6 +1755,10 @@ int32_t dll_pll_veml_tracking::save_matfile() const
     auto abs_VL = std::vector<float>(num_epoch);
     auto Prompt_I = std::vector<float>(num_epoch);
     auto Prompt_Q = std::vector<float>(num_epoch);
+    auto Early_I = std::vector<float>(num_epoch);
+    auto Early_Q = std::vector<float>(num_epoch);
+    auto Late_I = std::vector<float>(num_epoch);
+    auto Late_Q = std::vector<float>(num_epoch);
     auto PRN_start_sample_count = std::vector<uint64_t>(num_epoch);
     auto acc_carrier_phase_rad = std::vector<float>(num_epoch);
     auto carrier_doppler_hz = std::vector<float>(num_epoch);
@@ -1776,6 +1789,10 @@ int32_t dll_pll_veml_tracking::save_matfile() const
                             dump_file.read(reinterpret_cast<char *>(&abs_VL[i]), sizeof(float));
                             dump_file.read(reinterpret_cast<char *>(&Prompt_I[i]), sizeof(float));
                             dump_file.read(reinterpret_cast<char *>(&Prompt_Q[i]), sizeof(float));
+                            dump_file.read(reinterpret_cast<char *>(&Early_I[i]), sizeof(float));
+                            dump_file.read(reinterpret_cast<char *>(&Early_Q[i]), sizeof(float));
+                            dump_file.read(reinterpret_cast<char *>(&Late_I[i]), sizeof(float));
+                            dump_file.read(reinterpret_cast<char *>(&Late_Q[i]), sizeof(float));
                             dump_file.read(reinterpret_cast<char *>(&PRN_start_sample_count[i]), sizeof(uint64_t));
                             dump_file.read(reinterpret_cast<char *>(&acc_carrier_phase_rad[i]), sizeof(float));
                             dump_file.read(reinterpret_cast<char *>(&carrier_doppler_hz[i]), sizeof(float));
@@ -1819,6 +1836,10 @@ int32_t dll_pll_veml_tracking::save_matfile() const
             write_matlab_var<2, float>("abs_VL", abs_VL.data(), matfp, dims);
             write_matlab_var<2, float>("Prompt_I", Prompt_I.data(), matfp, dims);
             write_matlab_var<2, float>("Prompt_Q", Prompt_Q.data(), matfp, dims);
+            write_matlab_var<2, float>("Early_I", Early_I.data(), matfp, dims);
+            write_matlab_var<2, float>("Early_Q", Early_Q.data(), matfp, dims);
+            write_matlab_var<2, float>("Late_I", Late_I.data(), matfp, dims);
+            write_matlab_var<2, float>("Late_Q", Late_Q.data(), matfp, dims);
             write_matlab_var<2, uint64_t>("PRN_start_sample_count", PRN_start_sample_count.data(), matfp, dims);
             write_matlab_var<2, float>("acc_carrier_phase_rad", acc_carrier_phase_rad.data(), matfp, dims);
             write_matlab_var<2, float>("carrier_doppler_hz", carrier_doppler_hz.data(), matfp, dims);
