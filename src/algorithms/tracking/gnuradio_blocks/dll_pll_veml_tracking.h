@@ -40,6 +40,7 @@
 #include <string>                             // for string
 #include <typeinfo>                           // for typeid
 #include <utility>                            // for pair
+#include <vector>                             // for vector
 
 /** \addtogroup Tracking
  * \{ */
@@ -79,6 +80,8 @@ private:
 
     void msg_handler_telemetry_to_trk(const pmt::pmt_t &msg);
     void do_correlation_step(const gr_complex *input_samples);
+    void update_multipath_shifts();
+    void apply_multipath_injection();
     void run_dll_pll();
     void check_carrier_phase_coherent_initialization();
     void update_tracking_vars();
@@ -201,6 +204,11 @@ private:
     int32_t d_code_lock_fail_counter;
     int32_t d_code_samples_per_chip;  // All signals have 1 sample per chip code except Gal. E1 which has 2 (CBOC disabled) or 12 (CBOC enabled)
     int32_t d_code_length_chips;
+
+    // Synthetic multipath injection (correlator-level). See MULTIPATH_INJECTION_README.md
+    bool d_mp_enable;      // true only when mp_enable && mp_num_rays > 0
+    int32_t d_mp_num_rays;
+    int32_t d_mp_n_base;   // number of base (E/P/L or VE/E/P/L/VL) taps
 
     uint32_t d_channel;
     uint32_t d_secondary_code_length;

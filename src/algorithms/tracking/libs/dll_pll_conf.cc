@@ -155,4 +155,29 @@ void Dll_Pll_Conf::SetFromConfiguration(const ConfigurationInterface *configurat
     bs_stable_best_required = configuration->property(role + ".bs_stable_best_required", bs_stable_best_required);
     bs_min_events_for_lock = configuration->property(role + ".bs_min_events_for_lock", bs_min_events_for_lock);
     bs_use_phase_dot_detector = configuration->property(role + ".bs_use_phase_dot_detector", bs_use_phase_dot_detector);
+
+    // Synthetic multipath injection (correlator-level).
+    mp_enable = configuration->property(role + ".multipath_enable", mp_enable);
+    if (mp_enable)
+        {
+            mp_num_rays = configuration->property(role + ".mp_num_rays", 1U);
+            mp_onset_s = configuration->property(role + ".mp_onset_s", mp_onset_s);
+            mp_cir_file = configuration->property(role + ".mp_cir_file", mp_cir_file);
+            mp_delay_chips.clear();
+            mp_amp.clear();
+            mp_phase_rad.clear();
+            mp_diff_doppler_hz.clear();
+            for (uint32_t j = 0; j < mp_num_rays; j++)
+                {
+                    const std::string idx = std::to_string(j);
+                    mp_delay_chips.push_back(configuration->property(role + ".mp_delay_chips_" + idx, 0.5));
+                    mp_amp.push_back(configuration->property(role + ".mp_amp_" + idx, 0.5));
+                    mp_phase_rad.push_back(configuration->property(role + ".mp_phase_rad_" + idx, 0.0));
+                    mp_diff_doppler_hz.push_back(configuration->property(role + ".mp_diff_doppler_hz_" + idx, 2.0));
+                }
+            if (mp_num_rays == 0)
+                {
+                    mp_enable = false;
+                }
+        }
 }

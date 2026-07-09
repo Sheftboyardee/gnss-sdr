@@ -22,6 +22,7 @@
 #include "configuration_interface.h"
 #include <cstdint>
 #include <string>
+#include <vector>
 
 /** \addtogroup Tracking
  * \{ */
@@ -86,6 +87,18 @@ public:
     bool dump_mat{true};
     bool tow_to_trk{false};
     bool bs_use_phase_dot_detector{true};
+
+    /* Synthetic multipath injection (correlator-level).
+     * When mp_enable == false, tracking is byte-identical to the baseline.
+     * See MULTIPATH_INJECTION_README.md for the config keys and physics. */
+    bool mp_enable{false};             // master switch
+    uint32_t mp_num_rays{0U};          // number of synthetic multipath rays M
+    double mp_onset_s{0.0};            // inject only after this tracking time [s] (post pull-in)
+    std::vector<double> mp_delay_chips;      // per-ray excess delay [chips]
+    std::vector<double> mp_amp;              // per-ray signed relative amplitude (MDR)
+    std::vector<double> mp_phase_rad;        // per-ray initial carrier phase [rad]
+    std::vector<double> mp_diff_doppler_hz;  // per-ray differential Doppler / fading rate [Hz]
+    std::string mp_cir_file{};               // optional ITU-R P.681 CIR time series (reserved, see README)
 };
 
 

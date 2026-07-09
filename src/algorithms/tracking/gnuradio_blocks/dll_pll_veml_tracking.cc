@@ -59,6 +59,7 @@
 #include <algorithm>  // for fill_n
 #include <array>
 #include <cmath>      // for fmod, round, floor
+#include <complex>    // for polar (multipath injection)
 #include <exception>  // for exception
 #include <iostream>   // for cout, cerr
 #include <map>
@@ -619,8 +620,20 @@ dll_pll_veml_tracking::dll_pll_veml_tracking(const Dll_Pll_Conf &conf_)
             d_n_correlator_taps = 3;
         }
 
-    d_correlator_outs = volk_gnsssdr::vector<gr_complex>(d_n_correlator_taps);
-    d_local_code_shift_chips = volk_gnsssdr::vector<float>(d_n_correlator_taps);
+    // Synthetic multipath injection: augment the tap array with n_base extra taps per ray.
+    // Base taps stay at indices [0 .. n_base-1] so all existing discriminator/CN0/lock/dump
+    // code is untouched; the extra echo taps are appended at [n_base ..].
+    d_mp_n_base = d_n_correlator_taps;
+    d_mp_num_rays = static_cast<int32_t>(d_trk_parameters.mp_num_rays);
+    d_mp_enable = d_trk_parameters.mp_enable && (d_mp_num_rays > 0);
+    int32_t n_taps_total = d_n_correlator_taps;
+    if (d_mp_enable)
+        {
+            n_taps_total = d_mp_n_base * (1 + d_mp_num_rays);
+        }
+
+    d_correlator_outs = volk_gnsssdr::vector<gr_complex>(n_taps_total);
+    d_local_code_shift_chips = volk_gnsssdr::vector<float>(n_taps_total);
     // map memory pointers of correlator outputs
     if (d_veml)
         {
@@ -649,7 +662,7 @@ dll_pll_veml_tracking::dll_pll_veml_tracking(const Dll_Pll_Conf &conf_)
             d_prompt_data_shift = &d_local_code_shift_chips[1];
         }
 
-    d_multicorrelator_cpu.init(static_cast<int>(2 * d_trk_parameters.vector_length), d_n_correlator_taps);
+    d_multicorrelator_cpu.init(static_cast<int>(2 * d_trk_parameters.vector_length), n_taps_total);
 
     if (d_trk_parameters.extend_correlation_symbols > 1)
         {
@@ -1067,6 +1080,25 @@ void dll_pll_veml_tracking::start_tracking()
     std::cout << "Tracking of " << d_systemName << " " << d_signal_pretty_name << " signal started on channel " << d_channel << " for satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN) << '\n';
     DLOG(INFO) << "Starting tracking of satellite " << Gnss_Satellite(d_systemName, d_acquisition_gnss_synchro->PRN) << " on channel " << d_channel;
 
+    // Log the resolved multipath-injection parameters so a mistyped per-ray key (which
+    // silently falls back to its default) does not pass unnoticed.
+    if (d_mp_enable)
+        {
+            std::string mp_msg = "Multipath injection ENABLED on channel " + std::to_string(d_channel) +
+                                 " (PRN " + std::to_string(d_acquisition_gnss_synchro->PRN) + "): onset=" +
+                                 std::to_string(d_trk_parameters.mp_onset_s) + " s [absolute recording time], rays=" +
+                                 std::to_string(d_mp_num_rays);
+            for (int32_t j = 0; j < d_mp_num_rays; j++)
+                {
+                    mp_msg += " | ray" + std::to_string(j) + ": delay=" + std::to_string(d_trk_parameters.mp_delay_chips[j]) +
+                              " chips, amp=" + std::to_string(d_trk_parameters.mp_amp[j]) + ", phase=" +
+                              std::to_string(d_trk_parameters.mp_phase_rad[j]) + " rad, fd=" +
+                              std::to_string(d_trk_parameters.mp_diff_doppler_hz[j]) + " Hz";
+                }
+            LOG(INFO) << mp_msg;
+            std::cout << mp_msg << '\n';
+        }
+
     // enable tracking pull-in
     d_state = 1;
     d_cloop = true;
@@ -1232,6 +1264,12 @@ bool dll_pll_veml_tracking::cn0_and_tracking_lock_status(double coh_integration_
 void dll_pll_veml_tracking::do_correlation_step(const gr_complex *input_samples)
 {
     // ################# CARRIER WIPEOFF AND CORRELATORS ##############################
+    // Refresh the multipath echo-tap shifts (they track the current base-tap spacing,
+    // which changes when the loop switches to narrow correlator spacing).
+    if (d_mp_enable)
+        {
+            update_multipath_shifts();
+        }
     // perform carrier wipe-off and compute Early, Prompt and Late correlation
     d_multicorrelator_cpu.set_input_output_vectors(d_correlator_outs.data(), input_samples);
     d_multicorrelator_cpu.Carrier_wipeoff_multicorrelator_resampler(
@@ -1241,6 +1279,13 @@ void dll_pll_veml_tracking::do_correlation_step(const gr_complex *input_samples)
         static_cast<float>(d_code_phase_step_chips) * static_cast<float>(d_code_samples_per_chip),
         static_cast<float>(d_code_phase_rate_step_chips) * static_cast<float>(d_code_samples_per_chip),
         d_trk_parameters.vector_length);
+
+    // Combine the echo taps into the base taps BEFORE the discriminators run, so the
+    // DLL/PLL/CN0/lock loops react to the multipath (faithful behaviour).
+    if (d_mp_enable)
+        {
+            apply_multipath_injection();
+        }
 
     // DATA CORRELATOR (if tracking tracks the pilot signal)
     if (d_trk_parameters.track_pilot)
@@ -1253,6 +1298,86 @@ void dll_pll_veml_tracking::do_correlation_step(const gr_complex *input_samples)
                 static_cast<float>(d_code_phase_step_chips) * static_cast<float>(d_code_samples_per_chip),
                 static_cast<float>(d_code_phase_rate_step_chips) * static_cast<float>(d_code_samples_per_chip),
                 d_trk_parameters.vector_length);
+        }
+}
+
+
+// Recompute the local-code shift of every multipath echo tap from the current base-tap
+// shifts. The echo tap that mirrors base tap i for ray j lives at index
+// n_base + j*n_base + i and is placed at shift base_shift[i] - tau_j, so that after
+// correlation it holds C(base_shift[i] - tau_j) = the direct correlation evaluated at
+// the echo delay. Shifts are stored in local-code-sample units (chips * samples_per_chip).
+void dll_pll_veml_tracking::update_multipath_shifts()
+{
+    // IMPORTANT (units): d_local_code_shift_chips holds shifts in *local-code-replica-sample*
+    // units, i.e. chips scaled by d_code_samples_per_chip (the replica's samples-per-chip:
+    // 1 for GPS L1 C/A, 2/12 for Gal. E1 CBOC). It is NOT the RF sample rate (~24.44
+    // samples/chip @ 25 Msps) -- the resampler maps these code-domain shifts to RF samples
+    // via code_phase_step_chips. The base tap shifts are set the same way, e.g.
+    //   d_local_code_shift_chips[Early] = -early_late_space_chips * d_code_samples_per_chip.
+    // So the echo delay must be expressed in the SAME code-domain units, hence
+    //   tau_code_units = delay_chips * d_code_samples_per_chip   (no RF-rate conversion).
+    const auto csc = static_cast<float>(d_code_samples_per_chip);
+    for (int32_t j = 0; j < d_mp_num_rays; j++)
+        {
+            // Sign convention validated empirically: a positive excess delay must produce a
+            // positive code/pseudorange bias (multipath pulls the correlation peak late).
+            // Flip this sign (- -> +) if the measured error envelope is inverted in delay
+            // (see README validation gate #2). The units are unchanged by the flip.
+            const auto tau_code_units = static_cast<float>(d_trk_parameters.mp_delay_chips[j]) * csc;
+            const int32_t base_idx = d_mp_n_base + j * d_mp_n_base;
+            for (int32_t i = 0; i < d_mp_n_base; i++)
+                {
+                    d_local_code_shift_chips[base_idx + i] = d_local_code_shift_chips[i] - tau_code_units;
+                }
+        }
+}
+
+
+// Combine the multipath echo taps into the base taps, in place, before the discriminators.
+// Identity: for an echo a*y[n-Delta], C'(s) = C(s) + a*C(s-Delta). The echo taps already
+// hold C(base_shift[i]-tau_j); here we add a_j * that to each base tap. a_j carries the
+// ray amplitude, initial phase and slow fading (differential Doppler) via t_now.
+void dll_pll_veml_tracking::apply_multipath_injection()
+{
+    // Gate 1 (per-channel): require this channel to be past pull-in, so the loop is locked
+    // and the pre-onset segment is clean.
+    if (d_pull_in_transitory)
+        {
+            return;
+        }
+    // Gate 2 (absolute): compare the onset against ABSOLUTE recording time (samples from
+    // file start / fs), NOT per-channel time-since-acquisition. PRNs acquire at different
+    // times, so a per-channel clock would stagger the clean->dirty boundary across
+    // satellites; the downstream scaler fitting (mirroring the spoof-onset design) assumes
+    // one consistent boundary in recording time. nitems_read(0) counts input samples from
+    // the start of the stream, so t_abs is common to all channels.
+    const double t_abs = static_cast<double>(this->nitems_read(0)) / d_trk_parameters.fs_in;
+    if (t_abs < d_trk_parameters.mp_onset_s)
+        {
+            return;
+        }
+
+    // Decorrelate the fading across satellites even in "global params" mode: give each PRN a
+    // deterministic initial-phase offset (golden-ratio low-discrepancy sequence). Without
+    // this, every channel shares diff_doppler + initial phase and fades in unison, which
+    // reads as a common-mode (oscillator/clock-like) effect rather than independent
+    // per-satellite multipath. Deterministic in PRN => reproducible across runs.
+    const double prn_phase = TWO_PI * std::fmod(0.6180339887498949 * static_cast<double>(d_acquisition_gnss_synchro->PRN), 1.0);
+
+    for (int32_t i = 0; i < d_mp_n_base; i++)
+        {
+            gr_complex accu = d_correlator_outs[i];
+            for (int32_t j = 0; j < d_mp_num_rays; j++)
+                {
+                    const double amp = d_trk_parameters.mp_amp[j];
+                    // a_j evolves across integrations (fading) via the differential-Doppler
+                    // term on the shared absolute clock; the PRN offset decorrelates channels.
+                    const double phase = d_trk_parameters.mp_phase_rad[j] + prn_phase + TWO_PI * d_trk_parameters.mp_diff_doppler_hz[j] * t_abs;
+                    const gr_complex a_j = static_cast<gr_complex>(amp * std::polar(1.0, phase));
+                    accu += a_j * d_correlator_outs[d_mp_n_base + j * d_mp_n_base + i];
+                }
+            d_correlator_outs[i] = accu;
         }
 }
 
