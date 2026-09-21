@@ -7,20 +7,23 @@ pseudorange bias, SQM E/P/L metrics) that carry a physically faithful, per-satel
 multipath signature — including DLL/PLL loop feedback, because the loops react to the
 corrupted correlators before they are dumped.
 
-When `multipath_enable=false` (the default), tracking is **byte-identical to the
-baseline** — every new code path is guarded, and no extra correlator taps are allocated.
+When `multipath_enable=false` (the default), every injection code path is guarded and
+no extra correlator taps are allocated. Byte-identical baseline output is a validation
+requirement; it still needs to be checked against the stock build.
 
 ## ⚠️ Verification status
 
-**The code is implemented and reviewed but NOT yet run against real data.** The
-environment it was authored in has no C++ toolchain, no build tree, and no TEXBAT `.bin`,
-so **validation gate #2 (the multipath error-envelope plot) has only been *documented as a
-procedure*, not *executed*.** Gate #2 is the single test that simultaneously proves the
-sign convention, the magnitude, and that the whole tap → combine → discriminator chain is
-wired correctly — until it is run on a real `cleanStatic` pass and the
-`code_error_chips`-vs-delay curve matches the classic S-curve, **treat the implementation
-as unverified.** Producing that curve is the first thing to do after building. The
-sign-flip and units notes below tell you what to change if the curve is wrong or inverted.
+The September 21, 2026 measurement handoff reports that injection reaches the
+correlators and tracking loops, but the old negative echo-tap offset produced negative
+pseudorange bias at delays of 0.15 and 0.30 chips with about 99% row retention.
+The offset is now positive in the resampler's convention. **The corrected build still
+requires the recording validation below.**
+
+The suspected phase defect was audited: the configured phase is added to a deterministic
+PRN-only offset, and the echo is multiplied by the full complex amplitude. No phase-path
+change was warranted by that audit. Adding pi negates the complex echo contribution at
+fixed inputs; the receiver-level sign test remains pending. The reported phase-pi runs
+at 0.30 chips retained only about 10% of rows and do not establish a phase defect.
 
 ## How it works
 
@@ -31,10 +34,11 @@ code at base shift `s` obeys the exact autocorrelation-shift identity
 C'(s) = Σ y'[n]·c[n-s] = C(s) + a·C(s-Δ)
 ```
 
-So the multipath-corrupted correlator value at each base tap equals the direct
-correlation plus `a` times the correlation evaluated at that tap's shift minus Δ. Because
-`C(s-Δ)` is computed by the *real* multicorrelator against the *real* samples, the code
-autocorrelation shape and front-end bandlimiting are exact — no closed-form R(·) needed.
+Here `s` denotes a local-code delay in `c[n-s]`. The implementation's shift has the
+opposite convention: the resampler adds it to the local-code index. Consequently the
+echo uses `base_shift + Δ` in the shift array. The extra correlations use the real
+multicorrelator and samples, preserving the code autocorrelation and front-end
+bandlimiting without a closed-form R(·).
 
 Implementation (in [dll_pll_veml_tracking.cc](src/algorithms/tracking/gnuradio_blocks/dll_pll_veml_tracking.cc)):
 
@@ -42,7 +46,7 @@ Implementation (in [dll_pll_veml_tracking.cc](src/algorithms/tracking/gnuradio_b
    E/P/L, 5 for VE/E/P/L/VL) to `n_base · (1 + M)`. Base taps stay at indices
    `[0 .. n_base-1]`, so all existing discriminator / CN0 / lock-detector / dump code is
    untouched. Ray `j`'s echo taps are appended at `[n_base + j·n_base ..]`.
-2. `update_multipath_shifts()` places each echo tap at `base_shift[i] - τ_j` and is
+2. `update_multipath_shifts()` places each echo tap at `base_shift[i] + τ_j` and is
    refreshed every integration (the base spacing narrows when the loop goes to extended
    integration). The single existing `Carrier_wipeoff_multicorrelator_resampler()` call
    fills all taps in one pass, reusing the same carrier wipe-off.
@@ -128,24 +132,38 @@ Tracking_1C.mp_diff_doppler_hz_0=2.0
 
 ## Validation
 
-Run these in order; each is a gate.
+Regenerate the disabled reference with the **same binary** used for injected runs.
+Match pseudorange by epoch and PRN and subtract that reference. Report per-PRN results
+and row retention as well as constellation summaries. One L1 C/A chip is 293.0525 m.
+Do not use `code_error_chips` as the envelope: it is the DLL residual, driven toward
+zero by the loop even when the tracked code phase has a steady bias. The downstream
+`SPIRAL/multipath_sweep/envelope.py` provides `--coverage`, `--per-prn` and `--diagnose`.
 
-1. **Disabled == baseline.** With `multipath_enable=false`, dumps are byte-identical to a
-   baseline run on the same `.bin`.
-2. **Multipath error envelope.** One static ray (`mp_amp=0.5`, `mp_diff_doppler=0`,
-   `mp_phase=0`), sweep `mp_delay_chips_0` over `0 .. 1.5`. Plot steady-state
-   `code_error_chips` (or pseudorange bias) vs delay: it must trace the classic S-shaped
-   multipath error envelope — zero at 0, peak near ~0.2–0.5 chips, decaying toward
-   ~1.5 chips; the sign inverts when `mp_amp` sign or `mp_phase` (0 vs π) flips.
-   **If the curve is inverted in delay, flip the shift sign** in
-   `update_multipath_shifts()` (change `- tau_code_units` to `+ tau_code_units`); the units
-   are unaffected by the flip. If instead the curve looks *flat* or the echo lands at ~24×
-   the intended delay, that is a units error — re-read the "Units" note above (the shift
-   array is code-domain, not RF samples).
-3. **Loop stays locked.** `carrier_lock_test` / CN0 stay in a sane range at moderate MDR.
-4. **Fading visible.** With `mp_diff_doppler_hz≈2`, CN0 and E/P/L show a slow ripple.
-5. **Feature deltas.** Full pipeline with vs. without injection: `Delta_c`, `Ratio_c`,
-   `pseudorange_variance`, `cn0` move in the injected segment and are unchanged pre-onset.
+Required recording checks:
+
+1. **Disabled == stock.** Compare dumps from `multipath_enable=false` with a stock-build
+   run on the same recording; require byte-identical output.
+2. **Delay sign.** With one static ray (`mp_amp=0.5`, `mp_diff_doppler=0`, `mp_phase=0`,
+   `mp_onset_s=120`), require positive pseudorange bias at 0.15 and 0.30 chips, the
+   uncensored points in the handoff (about 99% retention).
+3. **Envelope endpoints.** Require approximately zero bias at zero delay and again
+   at 1.20–1.50 chips.
+4. **Phase inversion.** Compare phase 0 and pi at **0.15 chips**, checking retention
+   in both runs. Require opposite bias signs; heavily censored 0.30/0.50-chip runs
+   cannot establish this result.
+5. **Repeatability.** Repeat an identical enabled configuration and recording. Require
+   identical satellite sets and per-PRN pseudorange differences of zero. The deterministic
+   phase offset alone does not establish receiver-level reproducibility.
+
+Static rays can produce inconsistent constant biases across satellites, leading to
+PVT rejection and downstream row loss. Surviving rows select smaller biases: the
+reported 0.082-chip peak at 0.50 chips with 19% retention is a lower bound, not model
+validation. A trustworthy static-ray peak is not required. Fading at 2 Hz restores
+coverage in the reported runs, but averages the steady bias away and cannot replace
+the static envelope test. PRN-set drift, especially before onset, remains unresolved;
+do not attribute it to satellite visibility or declare it fixed by the delay correction.
+
+Also check lock/CN0, fading in E/P/L at about 2 Hz, and pre-onset feature agreement.
 
 ### Delay arithmetic (L1 C/A @ 25 Msps)
 

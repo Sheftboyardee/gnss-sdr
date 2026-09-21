@@ -1304,9 +1304,9 @@ void dll_pll_veml_tracking::do_correlation_step(const gr_complex *input_samples)
 
 // Recompute the local-code shift of every multipath echo tap from the current base-tap
 // shifts. The echo tap that mirrors base tap i for ray j lives at index
-// n_base + j*n_base + i and is placed at shift base_shift[i] - tau_j, so that after
-// correlation it holds C(base_shift[i] - tau_j) = the direct correlation evaluated at
-// the echo delay. Shifts are stored in local-code-sample units (chips * samples_per_chip).
+// n_base + j*n_base + i and is placed at shift base_shift[i] + tau_j. The resampler
+// adds the shift to the local-code index, so a delayed echo requires a positive offset.
+// Shifts are stored in local-code-sample units (chips * samples_per_chip).
 void dll_pll_veml_tracking::update_multipath_shifts()
 {
     // IMPORTANT (units): d_local_code_shift_chips holds shifts in *local-code-replica-sample*
@@ -1320,23 +1320,21 @@ void dll_pll_veml_tracking::update_multipath_shifts()
     const auto csc = static_cast<float>(d_code_samples_per_chip);
     for (int32_t j = 0; j < d_mp_num_rays; j++)
         {
-            // Sign convention validated empirically: a positive excess delay must produce a
-            // positive code/pseudorange bias (multipath pulls the correlation peak late).
-            // Flip this sign (- -> +) if the measured error envelope is inverted in delay
-            // (see README validation gate #2). The units are unchanged by the flip.
+            // Subtracting the delay produced an inverted pseudorange envelope in recording
+            // tests. Add it in this resampler's convention to place the echo late.
             const auto tau_code_units = static_cast<float>(d_trk_parameters.mp_delay_chips[j]) * csc;
             const int32_t base_idx = d_mp_n_base + j * d_mp_n_base;
             for (int32_t i = 0; i < d_mp_n_base; i++)
                 {
-                    d_local_code_shift_chips[base_idx + i] = d_local_code_shift_chips[i] - tau_code_units;
+                    d_local_code_shift_chips[base_idx + i] = d_local_code_shift_chips[i] + tau_code_units;
                 }
         }
 }
 
 
 // Combine the multipath echo taps into the base taps, in place, before the discriminators.
-// Identity: for an echo a*y[n-Delta], C'(s) = C(s) + a*C(s-Delta). The echo taps already
-// hold C(base_shift[i]-tau_j); here we add a_j * that to each base tap. a_j carries the
+// With the resampler's positive local-code shifts, the echo taps already hold the
+// delayed contribution at base_shift[i]+tau_j; add a_j * that to each base tap. a_j carries the
 // ray amplitude, initial phase and slow fading (differential Doppler) via t_now.
 void dll_pll_veml_tracking::apply_multipath_injection()
 {
