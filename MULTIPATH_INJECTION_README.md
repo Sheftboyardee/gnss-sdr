@@ -11,9 +11,9 @@ When `multipath_enable=false` (the default), every injection code path is guarde
 no extra correlator taps are allocated. Byte-identical baseline output is a validation
 requirement; it still needs to be checked against the stock build.
 
-## ⚠️ Verification status
+## Verification status
 
-The September 21, 2026 measurement handoff reports that injection reaches the
+As of September 21, 2026 injection reaches the
 correlators and tracking loops, but the old negative echo-tap offset produced negative
 pseudorange bias at delays of 0.15 and 0.30 chips with about 99% row retention.
 The offset is now positive in the resampler's convention. **The corrected build still
@@ -219,26 +219,3 @@ cmake --build build -j$(nproc) --target gnss-sdr
 The adapter chain (`GpsL1CaDllPllTracking` → `BaseDllPllTracking` →
 `Dll_Pll_Conf::SetFromConfiguration`) needs no change; the new keys are read generically
 for any tracking role.
-
-## Open decisions to confirm before the first study
-
-These do not block the build — the current default behaviour is single-ray, global
-(shared-across-PRN) parameters — but they shape the experiment and should be confirmed
-with the requester.
-
-1. **Number of rays M for the first study.** Single-ray (`mp_num_rays=1`) is enough for
-   the specificity test and matches the Li et al. 2023 single-ray training reference.
-   Multi-ray is only needed for realistic ITU-R P.681 CIRs. *Current default: single
-   ray.*
-2. **Per-PRN vs global parameters for the sweep.** Global is simpler and adequate for a
-   first pass. The config keys are currently read per tracking role (delay/amp/phase/fd
-   shared across PRNs — but each channel still echoes its own PRN, and per-PRN initial
-   phase is decorrelated so the fading is not synchronous). The block architecture already
-   allows fully per-PRN parameters (needed for realistic CIRs), which would be keyed by PRN
-   with fall-back to the global value. *Current default: global scalars + per-PRN phase
-   decorrelation.*
-3. **Which scenarios get reprocessed.** At minimum `cleanStatic`; likely also
-   `cleanDynamic`. *To be confirmed.*
-
-The pre-onset segment must remain clean (guaranteed by the `mp_onset_s` gate) — the
-downstream scaler fitting relies on this, mirroring the existing spoof-onset design.
